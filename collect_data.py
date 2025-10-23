@@ -4,6 +4,12 @@ Sniff ARP packets and append to data/arp_log.csv.
 Run this with admin/root privileges:
     sudo python securecomm/collect_data.py --iface eth0 --duration 60
 """
+"""
+This script’s job is not detecting attacks directly, but collecting 
+raw ARP traffic in a structured form (csv). Later, another part of your project 
+can analyze these logs to flag suspicious activity 
+(e.g., multiple MACs claiming the same IP).
+"""
 
 import argparse
 import csv

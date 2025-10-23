@@ -25,21 +25,29 @@ def build_features_per_ip(df):
     - top_mac (most frequent)
     - top_mac_ratio (frequency ratio)
     - is_private (bool)
-    NOTE: label 'is_spoof' left as max(is_spoof) from raw if available (0/1).
+    NOTE: label 'is_spoof' set to 1 if >1 MAC claims same IP, 
+          otherwise taken from raw data if available.
     """
     rows = []
     grouped = df.groupby("ip")
     for ip, g in grouped:
         times = pd.to_datetime(g["timestamp"])
         macs = g["mac"].astype(str)
+
         top_mac = macs.mode().iloc[0] if not macs.mode().empty else ""
         mac_counts = macs.value_counts()
-        top_ratio = mac_counts.iloc[0] / mac_counts.sum() if len(mac_counts)>0 else 1.0
+        top_ratio = mac_counts.iloc[0] / mac_counts.sum() if len(mac_counts) > 0 else 1.0
         distinct_mac_count = mac_counts.size
         total_claims = len(g)
         first_seen = times.min()
         last_seen = times.max()
-        is_spoof_label = int(g["is_spoof"].max()) if "is_spoof" in g.columns else 0
+
+        # 🚨 Spoof detection rule:
+        if distinct_mac_count > 1:
+            is_spoof_label = 1
+        else:
+            is_spoof_label = int(g["is_spoof"].max()) if "is_spoof" in g.columns else 0
+
         rows.append({
             "ip": ip,
             "first_seen": first_seen,

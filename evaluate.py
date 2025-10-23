@@ -4,7 +4,7 @@ Quick script to evaluate a saved model against features.csv
 """
 
 import os
-import pandas as pds
+import pandas as pd
 from joblib import load
 from sklearn.metrics import classification_report, accuracy_score
 from securecomm.train_model import prepare_Xy
