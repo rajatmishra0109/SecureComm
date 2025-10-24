@@ -1,91 +1,212 @@
 import streamlit as st
-import threading
+import sys
+from pathlib import Path
 import time
-import os
-from train_model import train_model
-from detector import start_detection, stop_detection
-from securecomm.utils import check_model_exists
+import pandas as pd
+from datetime import datetime
 
-# --- Streamlit UI ---
+# Add project root to Python path
+BASE_DIR = Path(__file__).parent.parent
+sys.path.insert(0, str(BASE_DIR))
+
+# Add the securecomm package directory to path
+SECURECOMM_DIR = BASE_DIR / "packet_tracer" / "securecomm"
+if SECURECOMM_DIR.exists():
+    sys.path.insert(0, str(SECURECOMM_DIR.parent))
+
+# Try importing live_predict
+try:
+    # Import relative to current directory
+    from live_predict import live_predict
+except ImportError:
+    try:
+        # Import from packet_tracer package
+        from packet_tracer.live_predict import live_predict
+    except ImportError:
+        try:
+            # Last resort: direct import after adding current dir to path
+            sys.path.insert(0, str(Path(__file__).parent))
+            from live_predict import live_predict
+        except ImportError as e:
+            st.error(f"❌ Could not import live_predict module: {str(e)}")
+            st.error("Please ensure you're running from the correct directory with the virtual environment activated")
+            st.info("Run these commands in the terminal:")
+            st.code("""
+cd "/Users/shashank/Desktop/project 2/SecureComm"
+source securecomm_env/Scripts/activate  # On Windows use: .\\securecomm_env\\Scripts\\activate
+pip install -e .
+streamlit run packet_tracer/app.py
+            """)
+            st.stop()
+
+# Page config
 st.set_page_config(
-    page_title="SecureComm - ARP Spoofing Detection",
-    page_icon="🛡",
-    layout="wide"
+    page_title="Network Monitor",
+    page_icon="🔒",
+    layout="wide",
 )
 
-st.markdown(
-    """
+# Custom CSS
+st.markdown("""
     <style>
-    .main {background-color: #f8f9fa;}
-    .stTabs [data-baseweb="tab"] {font-size: 18px;}
-    .stTabs [data-baseweb="tab"]:hover {color: #0072ff;}
+    .main-title {
+        color: #00ff88;
+        font-size: 3em;
+        font-weight: 700;
+        text-align: center;
+        text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+        margin-bottom: 1em;
+    }
+    
+    .stApp {
+        background: linear-gradient(135deg, #1e1e2e 0%, #2d2d44 100%);
+    }
+    
+    .status-card {
+        background: rgba(255,255,255,0.05);
+        padding: 20px;
+        border-radius: 10px;
+        border: 1px solid rgba(255,255,255,0.1);
+    }
+    
+    .alert-box {
+        background: rgba(255,0,0,0.1);
+        border: 2px solid #ff4444;
+        border-radius: 10px;
+        padding: 20px;
+        margin: 10px 0;
+        animation: pulse 2s infinite;
+    }
+    
+    @keyframes pulse {
+        0% { box-shadow: 0 0 0 0 rgba(255,0,0,0.4); }
+        70% { box-shadow: 0 0 0 10px rgba(255,0,0,0); }
+        100% { box-shadow: 0 0 0 0 rgba(255,0,0,0); }
+    }
+    
+    .metric-card {
+        background: rgba(0,255,136,0.05);
+        padding: 15px;
+        border-radius: 8px;
+        border: 1px solid rgba(0,255,136,0.2);
+        margin: 5px 0;
+    }
     </style>
-    """,
-    unsafe_allow_html=True
-)
+""", unsafe_allow_html=True)
 
-st.title("🛡 SecureComm - ARP Spoofing Detection System")
-st.markdown("#### Protect your network from Man-in-the-Middle (MITM) attacks using ARP spoofing detection.")
+# Title
+st.markdown("<h1 class='main-title'>🔒 Network Security Monitor</h1>", unsafe_allow_html=True)
 
-tab1, tab2, tab3 = st.tabs([
-    "📦 Model Management",
-    "🔍 Live Detection",
-    "📜 Detection Logs"
-])
+# Initialize session state
+if 'monitoring' not in st.session_state:
+    st.session_state.monitoring = False
+if 'alerts' not in st.session_state:
+    st.session_state.alerts = []
+if 'total_packets' not in st.session_state:
+    st.session_state.total_packets = 0
 
-with tab1:
-    st.subheader("Model Status")
-    if check_model_exists():
-        st.success("✅ Model file found! Ready for detection.")
+# Control columns
+col1, col2, col3 = st.columns([1,1,1])
+
+with col1:
+    if not st.session_state.monitoring:
+        if st.button("▶️ Start Monitoring", use_container_width=True):
+            st.session_state.monitoring = True
+            st.experimental_rerun()
     else:
-        st.warning("⚠ No model found. Please train the model first.")
+        if st.button("⏹️ Stop Monitoring", use_container_width=True):
+            st.session_state.monitoring = False
+            st.experimental_rerun()
 
-    if st.button("🎯 Train Model"):
-        with st.spinner("Training model... This may take a while"):
-            train_model()
-        st.success("Model trained and saved successfully!")
+with col2:
+    if st.button("🗑️ Clear Alerts", use_container_width=True):
+        st.session_state.alerts = []
 
-with tab2:
-    st.subheader("Live Detection")
-    detection_running = st.session_state.get("detection_running", False)
-
-    col1, col2 = st.columns([1, 2])
-    with col1:
-        if not detection_running:
-            if st.button("▶ Start Detection"):
-                st.session_state.detection_running = True
-                threading.Thread(target=start_detection, args=(st,), daemon=True).start()
-        else:
-            if st.button("⏹ Stop Detection"):
-                stop_detection()
-                st.session_state.detection_running = False
-                st.info("Detection stopped.")
-
-    with col2:
-        st.info("Detection will monitor ARP packets and log suspicious activity in real time.")
-
-with tab3:
-    st.subheader("Detection Logs")
-    log_placeholder = st.empty()
-
-    log_path = "logs/detection_log.txt"
-    if st.session_state.get("detection_running", False):
-        st.info("Live logs updating every 2 seconds...")
-        for _ in range(10):  # Show updates for 20 seconds
-            if os.path.exists(log_path):
-                with open(log_path, "r") as f:
-                    logs = f.read()
-                log_placeholder.text_area("Detection Log", logs, height=300)
-            else:
-                log_placeholder.warning("No logs found yet.")
-            time.sleep(2)
+# Status indicator
+with col3:
+    if st.session_state.monitoring:
+        st.markdown("<div class='status-card'><h3>📡 Status: <span style='color:#00ff88'>ACTIVE</span></h3></div>", 
+                   unsafe_allow_html=True)
     else:
-        if os.path.exists(log_path):
-            with open(log_path, "r") as f:
-                logs = f.read()
-            st.text_area("Detection Log", logs, height=300)
-        else:
-            st.warning("No logs found yet.")
+        st.markdown("<div class='status-card'><h3>📡 Status: <span style='color:#ff4444'>STOPPED</span></h3></div>", 
+                   unsafe_allow_html=True)
 
-st.markdown("---")
-st.caption("© 2025 SecureComm | Built with Streamlit")
+# Create placeholders for live updates
+metrics_placeholder = st.empty()
+alert_placeholder = st.empty()
+table_placeholder = st.empty()
+
+if st.session_state.monitoring:
+    try:
+        predictor = live_predict()
+        
+        while st.session_state.monitoring:
+            try:
+                # Get next prediction
+                prediction = next(predictor)
+                st.session_state.total_packets += 1
+                
+                # Update metrics
+                with metrics_placeholder.container():
+                    m1, m2, m3 = st.columns(3)
+                    with m1:
+                        st.markdown("""
+                            <div class='metric-card'>
+                                <h4>Total Packets</h4>
+                                <h2>{}</h2>
+                            </div>
+                        """.format(st.session_state.total_packets), unsafe_allow_html=True)
+                    with m2:
+                        st.markdown("""
+                            <div class='metric-card'>
+                                <h4>Alerts</h4>
+                                <h2>{}</h2>
+                            </div>
+                        """.format(len(st.session_state.alerts)), unsafe_allow_html=True)
+                    with m3:
+                        st.markdown("""
+                            <div class='metric-card'>
+                                <h4>Last Update</h4>
+                                <h2>{}</h2>
+                            </div>
+                        """.format(datetime.now().strftime("%H:%M:%S")), unsafe_allow_html=True)
+
+                # Check for anomalies/spoofing
+                if isinstance(prediction, dict):
+                    mac_count = prediction.get('distinct_mac_count', 0)
+                    if mac_count > 1:
+                        alert = {
+                            'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                            'type': 'ARP Spoofing Detected',
+                            'details': f'Multiple MACs ({mac_count}) detected for same IP'
+                        }
+                        st.session_state.alerts.insert(0, alert)
+
+                # Display alerts
+                with alert_placeholder.container():
+                    for alert in st.session_state.alerts[:5]:  # Show last 5 alerts
+                        st.markdown(f"""
+                            <div class='alert-box'>
+                                <h3>⚠️ {alert['type']}</h3>
+                                <p>🕒 {alert['timestamp']}</p>
+                                <p>{alert['details']}</p>
+                            </div>
+                        """, unsafe_allow_html=True)
+
+                # Display current packet data
+                if isinstance(prediction, dict):
+                    df = pd.DataFrame([prediction])
+                    table_placeholder.dataframe(df, use_container_width=True)
+
+                time.sleep(1)  # Prevent overwhelming the UI
+                
+            except StopIteration:
+                st.warning("🔄 Prediction stream ended. Restarting...")
+                predictor = live_predict()
+                
+    except Exception as e:
+        st.error(f"❌ Error during monitoring: {str(e)}")
+        st.session_state.monitoring = False
+
+else:
+    st.info("👆 Click 'Start Monitoring' to begin network surveillance")
