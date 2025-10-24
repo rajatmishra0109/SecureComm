@@ -1,212 +1,99 @@
 import streamlit as st
-import sys
-from pathlib import Path
-import time
-import pandas as pd
+import subprocess
+import threading
+import queue
+import re
 from datetime import datetime
 
-# Add project root to Python path
-BASE_DIR = Path(__file__).parent.parent
-sys.path.insert(0, str(BASE_DIR))
-
-# Add the securecomm package directory to path
-SECURECOMM_DIR = BASE_DIR / "packet_tracer" / "securecomm"
-if SECURECOMM_DIR.exists():
-    sys.path.insert(0, str(SECURECOMM_DIR.parent))
-
-# Try importing live_predict
-try:
-    # Import relative to current directory
-    from live_predict import live_predict
-except ImportError:
-    try:
-        # Import from packet_tracer package
-        from packet_tracer.live_predict import live_predict
-    except ImportError:
-        try:
-            # Last resort: direct import after adding current dir to path
-            sys.path.insert(0, str(Path(__file__).parent))
-            from live_predict import live_predict
-        except ImportError as e:
-            st.error(f"❌ Could not import live_predict module: {str(e)}")
-            st.error("Please ensure you're running from the correct directory with the virtual environment activated")
-            st.info("Run these commands in the terminal:")
-            st.code("""
-cd "/Users/shashank/Desktop/project 2/SecureComm"
-source securecomm_env/Scripts/activate  # On Windows use: .\\securecomm_env\\Scripts\\activate
-pip install -e .
-streamlit run packet_tracer/app.py
-            """)
-            st.stop()
-
-# Page config
 st.set_page_config(
-    page_title="Network Monitor",
-    page_icon="🔒",
-    layout="wide",
+    page_title="Live ARP MITM Detector",
+    page_icon="⚠️",
+    layout="wide"
 )
 
-# Custom CSS
-st.markdown("""
-    <style>
-    .main-title {
-        color: #00ff88;
-        font-size: 3em;
-        font-weight: 700;
-        text-align: center;
-        text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
-        margin-bottom: 1em;
-    }
-    
-    .stApp {
-        background: linear-gradient(135deg, #1e1e2e 0%, #2d2d44 100%);
-    }
-    
-    .status-card {
-        background: rgba(255,255,255,0.05);
-        padding: 20px;
-        border-radius: 10px;
-        border: 1px solid rgba(255,255,255,0.1);
-    }
-    
-    .alert-box {
-        background: rgba(255,0,0,0.1);
-        border: 2px solid #ff4444;
-        border-radius: 10px;
-        padding: 20px;
-        margin: 10px 0;
-        animation: pulse 2s infinite;
-    }
-    
-    @keyframes pulse {
-        0% { box-shadow: 0 0 0 0 rgba(255,0,0,0.4); }
-        70% { box-shadow: 0 0 0 10px rgba(255,0,0,0); }
-        100% { box-shadow: 0 0 0 0 rgba(255,0,0,0); }
-    }
-    
-    .metric-card {
-        background: rgba(0,255,136,0.05);
-        padding: 15px;
-        border-radius: 8px;
-        border: 1px solid rgba(0,255,136,0.2);
-        margin: 5px 0;
-    }
-    </style>
-""", unsafe_allow_html=True)
+st.title("🕵️ Live ARP MITM Detection Dashboard")
+st.markdown(
+    "This app runs `live_predict.py` in background and displays live alerts "
+    "when multiple MACs claim the same IP."
+)
 
-# Title
-st.markdown("<h1 class='main-title'>🔒 Network Security Monitor</h1>", unsafe_allow_html=True)
+# --- Inputs ---
+iface = st.text_input("Enter Network Interface (e.g., en0, eth0):", "en0")
+start_btn = st.button("🚀 Start Detection")
+stop_btn = st.button("🛑 Stop Detection")
 
-# Initialize session state
-if 'monitoring' not in st.session_state:
-    st.session_state.monitoring = False
-if 'alerts' not in st.session_state:
-    st.session_state.alerts = []
-if 'total_packets' not in st.session_state:
-    st.session_state.total_packets = 0
+# --- Thread-safe objects ---
+output_queue = queue.Queue()
+stop_event = threading.Event()  # replaces session_state.stop_flag
+process = None
 
-# Control columns
-col1, col2, col3 = st.columns([1,1,1])
+# Initialize Streamlit session_state
+if "alerted_ips" not in st.session_state:
+    st.session_state.alerted_ips = set()
+if "log_lines" not in st.session_state:
+    st.session_state.log_lines = []
 
-with col1:
-    if not st.session_state.monitoring:
-        if st.button("▶️ Start Monitoring", use_container_width=True):
-            st.session_state.monitoring = True
-            st.experimental_rerun()
-    else:
-        if st.button("⏹️ Stop Monitoring", use_container_width=True):
-            st.session_state.monitoring = False
-            st.experimental_rerun()
+# Regex to parse live_predict.py output
+line_pattern = re.compile(
+    r"\[(?P<ip>[\d\.]+)\]\s+feat=\{.*?'distinct_mac_count':\s*(?P<mac_count>\d+).*?\}\s*->"
+)
 
-with col2:
-    if st.button("🗑️ Clear Alerts", use_container_width=True):
-        st.session_state.alerts = []
+# --- Thread function ---
+def run_detector(iface, stop_event, output_queue):
+    global process
+    cmd = ["sudo", "python3", "live_predict.py", "--iface", iface]
+    process = subprocess.Popen(
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1
+    )
 
-# Status indicator
-with col3:
-    if st.session_state.monitoring:
-        st.markdown("<div class='status-card'><h3>📡 Status: <span style='color:#00ff88'>ACTIVE</span></h3></div>", 
-                   unsafe_allow_html=True)
-    else:
-        st.markdown("<div class='status-card'><h3>📡 Status: <span style='color:#ff4444'>STOPPED</span></h3></div>", 
-                   unsafe_allow_html=True)
+    for line in process.stdout:
+        if stop_event.is_set():
+            break
+        output_queue.put(line.strip())
 
-# Create placeholders for live updates
-metrics_placeholder = st.empty()
-alert_placeholder = st.empty()
-table_placeholder = st.empty()
+    if process:
+        process.terminate()
+        process = None
 
-if st.session_state.monitoring:
-    try:
-        predictor = live_predict()
-        
-        while st.session_state.monitoring:
-            try:
-                # Get next prediction
-                prediction = next(predictor)
-                st.session_state.total_packets += 1
-                
-                # Update metrics
-                with metrics_placeholder.container():
-                    m1, m2, m3 = st.columns(3)
-                    with m1:
-                        st.markdown("""
-                            <div class='metric-card'>
-                                <h4>Total Packets</h4>
-                                <h2>{}</h2>
-                            </div>
-                        """.format(st.session_state.total_packets), unsafe_allow_html=True)
-                    with m2:
-                        st.markdown("""
-                            <div class='metric-card'>
-                                <h4>Alerts</h4>
-                                <h2>{}</h2>
-                            </div>
-                        """.format(len(st.session_state.alerts)), unsafe_allow_html=True)
-                    with m3:
-                        st.markdown("""
-                            <div class='metric-card'>
-                                <h4>Last Update</h4>
-                                <h2>{}</h2>
-                            </div>
-                        """.format(datetime.now().strftime("%H:%M:%S")), unsafe_allow_html=True)
+# --- Start / Stop ---
+if start_btn and (process is None or not process.poll() is None):
+    stop_event.clear()
+    threading.Thread(target=run_detector, args=(iface, stop_event, output_queue), daemon=True).start()
+    st.success("✅ Started live detection...")
 
-                # Check for anomalies/spoofing
-                if isinstance(prediction, dict):
-                    mac_count = prediction.get('distinct_mac_count', 0)
-                    if mac_count > 1:
-                        alert = {
-                            'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                            'type': 'ARP Spoofing Detected',
-                            'details': f'Multiple MACs ({mac_count}) detected for same IP'
-                        }
-                        st.session_state.alerts.insert(0, alert)
+if stop_btn:
+    stop_event.set()
+    st.warning("🛑 Detection stopped.")
 
-                # Display alerts
-                with alert_placeholder.container():
-                    for alert in st.session_state.alerts[:5]:  # Show last 5 alerts
-                        st.markdown(f"""
-                            <div class='alert-box'>
-                                <h3>⚠️ {alert['type']}</h3>
-                                <p>🕒 {alert['timestamp']}</p>
-                                <p>{alert['details']}</p>
-                            </div>
-                        """, unsafe_allow_html=True)
+# --- Display containers ---
+log_box = st.empty()
+alert_box = st.empty()
 
-                # Display current packet data
-                if isinstance(prediction, dict):
-                    df = pd.DataFrame([prediction])
-                    table_placeholder.dataframe(df, use_container_width=True)
+# --- Update Streamlit display ---
+def update_display():
+    while not output_queue.empty():
+        line = output_queue.get_nowait()
+        if line:
+            st.session_state.log_lines.append(line)
+            # Keep last 50 lines
+            if len(st.session_state.log_lines) > 50:
+                st.session_state.log_lines = st.session_state.log_lines[-50:]
 
-                time.sleep(1)  # Prevent overwhelming the UI
-                
-            except StopIteration:
-                st.warning("🔄 Prediction stream ended. Restarting...")
-                predictor = live_predict()
-                
-    except Exception as e:
-        st.error(f"❌ Error during monitoring: {str(e)}")
-        st.session_state.monitoring = False
+            # Parse for ARP spoof
+            match = line_pattern.search(line)
+            if match:
+                ip = match.group("ip")
+                mac_count = int(match.group("mac_count"))
+                if mac_count > 1 and ip not in st.session_state.alerted_ips:
+                    st.session_state.alerted_ips.add(ip)
+                    alert_box.error(
+                        f"⚠️ POSSIBLE ARP SPOOF DETECTED! IP `{ip}` has multiple MACs ({mac_count})"
+                    )
 
-else:
-    st.info("👆 Click 'Start Monitoring' to begin network surveillance")
+    # Display last 5 log lines
+    if st.session_state.log_lines:
+        log_box.text("\n".join(st.session_state.log_lines[-5:]))
+
+# --- Streamlit auto-refresh ---
+update_display()
+st.experimental_rerun()
