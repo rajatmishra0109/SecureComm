@@ -26,7 +26,7 @@ def build_features_per_ip(df):
     - top_mac_ratio (frequency ratio)
     - is_private (bool)
     NOTE: label 'is_spoof' set to 1 if >1 MAC claims same IP, 
-          otherwise taken from raw data if available.
+          otherwise default to 0 (normal traffic).
     """
     rows = []
     grouped = df.groupby("ip")
@@ -42,11 +42,13 @@ def build_features_per_ip(df):
         first_seen = times.min()
         last_seen = times.max()
 
-        # 🚨 Spoof detection rule:
+        # 🚨 Spoof detection rule
+        # If >1 MAC claims the same IP → likely spoofed
         if distinct_mac_count > 1:
             is_spoof_label = 1
         else:
-            is_spoof_label = int(g["is_spoof"].max()) if "is_spoof" in g.columns else 0
+            # Assign 0 if not spoofed
+            is_spoof_label = 0
 
         rows.append({
             "ip": ip,
@@ -68,6 +70,11 @@ def main():
     if df.empty:
         print("[!] No ARP records found.")
         return
+
+    # ✅ Add default boolean column if not present
+    if "is_spoof" not in df.columns:
+        df["is_spoof"] = False  # Assign False to all collected entries (normal)
+
     feat = build_features_per_ip(df)
     feat.to_csv(OUT_F, index=False)
     print(f"[+] Features written to {OUT_F}. Rows: {len(feat)}")
